@@ -1,6 +1,6 @@
 # Polygon Area Splitter (QGIS)
 
-Plugin by Mike Elstermann (#geoObserver).
+Plugin by Mike Elstermann (#geoObserver) with AI.
 
 ## Features
 - Works with QGIS 3 (Qt 5 or Qt 6 builds) and is written against `qgis.PyQt`.
@@ -19,6 +19,7 @@ Plugin by Mike Elstermann (#geoObserver).
 4. Activate the plugin from the Plugins menu or the `geoObserverTools` toolbar.
 
 ## Notes
+
 - Use a projected CRS with metre units (for example EPSG:25832).
 - The algorithm uses planar geometry and area in the layer CRS.
 - Complex concave geometries, holes, multipart polygons, or very narrow shapes can produce disconnected pieces or make a requested area unreachable from the selected edge. Inspect the output before using it in production.
@@ -27,3 +28,9 @@ Plugin by Mike Elstermann (#geoObserver).
 
 ## AI assistance / warranty
 This file contains code generated with assistance from an AI. No warranty is provided. Human review and modification performed by Mike Elstermann (#geoObserver).
+
+
+
+![PolygonAreaSplitter_Animation_1](./PolygonAreaSplitter_Animation_1.gif)
+
+*Animation: Short Demo for the PolygonAreaSplitter-Plugin* 
