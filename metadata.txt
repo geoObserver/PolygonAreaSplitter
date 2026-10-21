@@ -14,4 +14,4 @@ tracker=https://github.com/geoObserver/PolygonAreaSplitter/issues
 repository=https://github.com/geoObserver/PolygonAreaSplitter
 experimental=False
 deprecated=False
-changelog=0.3 - Initial Upload
+changelog=0.5 - Initial Upload
