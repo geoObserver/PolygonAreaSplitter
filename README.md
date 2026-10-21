@@ -27,3 +27,7 @@ Plugin by Mike Elstermann (#geoObserver) with AI-Support.
 
 ## AI assistance / warranty
 This file contains code generated with assistance from an AI. No warranty is provided. Human review and modification performed by Mike Elstermann (#geoObserver).
+
+
+
+![PolygonAreaSplitter_Animation_1](./PolygonAreaSplitter_Animation_1.gif)
