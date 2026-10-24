@@ -20,8 +20,10 @@ from qgis.core import (
     QgsCoordinateTransform,
     QgsExpression,
     QgsFeature,
+    QgsFillSymbol,
     QgsField,
     QgsGeometry,
+    QgsLineSymbol,
     QgsPalLayerSettings,
     QgsPointXY,
     QgsProject,
@@ -41,8 +43,21 @@ try:
 except ImportError:
     from qgis.PyQt.QtWidgets import QAction      # QGIS 3 (Qt5)
 
-from qgis.PyQt.QtWidgets import QInputDialog, QMessageBox, QToolBar
+from qgis.PyQt.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QInputDialog,
+    QLabel,
+    QMessageBox,
+    QRadioButton,
+    QToolBar,
+    QVBoxLayout,
+)
 
+
+SPLIT_FIELD = "split_id"
+UNIT_FIELD = "area_unit"
 
 TEXTS = {
     "title": {"de": "Polygon nach Fläche teilen", "en": "Divide a Polygon by Area"},
@@ -73,8 +88,14 @@ TEXTS = {
                        "en": "The selected polygon has no valid geometry."},
     "invalid_geometry": {"de": "Das ausgewählte Polygon ist geometrisch ungültig.",
                          "en": "The selected polygon has invalid geometry."},
-    "target_prompt": {"de": "Gewünschte Teilfläche in m²:",
-                      "en": "Target area in m²:"},
+    "target_prompt": {"de": "Gewünschte Teilfläche in {}:",
+                      "en": "Target area in {}:"},
+    "target_area_label": {"de": "Gewünschte Teilfläche:", "en": "Target area:"},
+    "unit_m2": {"de": "Quadratmeter (m²)", "en": "Square metres (m²)"},
+    "unit_ha": {"de": "Hektar (ha)", "en": "Hectares (ha)"},
+    "split_result": {"de": "Split-ID: {}", "en": "Split ID: {}"},
+    "field_failed": {"de": "Das Feld split_id konnte im vorhandenen Layer nicht angelegt werden.",
+                     "en": "The field split_id could not be added to the existing layer."},
     "target_too_large": {
         "de": "Die gewünschte Teilfläche muss kleiner sein als die Gesamtfläche des Polygons.\n\nGesamtfläche: {:.2f} m²",
         "en": "The target area must be smaller than the total polygon area.\n\nTotal area: {:.2f} m²"
@@ -124,6 +145,10 @@ TEXTS = {
     "target_label": {"de": "Teilfläche", "en": "Target Area"},
     "remainder_label": {"de": "Restfläche", "en": "Remainder"},
     "output_layer": {"de": "Polygonteilung", "en": "Polygon Split"},
+    "edge_layer": {"de": "Polygonbezugskanten", "en": "Polygon reference edges"},
+    "output_incompatible": {"de": 'Der vorhandene Layer "Polygonteilung" passt nicht zum aktuellen Polygonlayer (Felder oder Koordinatensystem weichen ab). Die Ergebnisse wurden nicht hinzugefügt.', "en": 'The existing "Polygon Split" layer is incompatible with the current polygon layer (fields or CRS differ). No results were added.'},
+    "edge_layer_incompatible": {"de": 'Der vorhandene Layer "Polygonbezugskanten" ist kein kompatibler Linienlayer im Koordinatensystem des Ursprungslayers.', "en": 'The existing "Polygon reference edges" layer is not a compatible line layer in the source layer CRS.'},
+    "edge_feature_failed": {"de": "Die neue Bezugskante konnte nicht gespeichert werden.", "en": "The new reference edge could not be saved."},
     "target_result": {"de": "Teilfläche: {:.2f} m²", "en": "Target area: {:.2f} m²"},
     "requested_result": {"de": "Gewünscht: {:.2f} m²", "en": "Requested area: {:.2f} m²"},
     "deviation_result": {"de": "Abweichung: {:.2f} m²", "en": "Deviation: {:.2f} m²"},
@@ -175,6 +200,33 @@ def _qtype_string():
 
 def _qtype_double():
     return _resolve(lambda: QMetaType.Type.Double, lambda: QVariant.Double)
+
+
+def _qtype_longlong():
+    return _resolve(lambda: QMetaType.Type.LongLong, lambda: QVariant.LongLong)
+
+
+def _pixel_unit():
+    return _resolve(lambda: Qgis.RenderUnit.Pixels, lambda: QgsUnitTypes.RenderPixels)
+
+
+def _line_placement():
+    return _resolve(
+        lambda: Qgis.LabelPlacement.Line,
+        lambda: QgsPalLayerSettings.Placement.Line,
+        lambda: QgsPalLayerSettings.Line,
+    )
+
+
+def _ensure_field(layer, field):
+    """Legt ein Feld an, falls es im Layer fehlt. True = Feld vorhanden."""
+    if field.name() in [f.name() for f in layer.fields()]:
+        return True
+    provider = layer.dataProvider()
+    if provider is None or not provider.addAttributes([field]):
+        return False
+    layer.updateFields()
+    return True
 
 
 def _horizontal_placement():
@@ -247,6 +299,7 @@ class PolygonAreaSplitter:
         self.toolbar = None
         self.map_tool = None
         self.previous_map_tool = None
+        self._area_unit = "m²"
         self.language = self._get_language()
 
     @staticmethod
@@ -406,10 +459,14 @@ class PolygonAreaSplitter:
 
     def _set_labels(self, output, area_field):
         settings = QgsPalLayerSettings()
+        area = QgsExpression.quotedColumnRef(area_field)
+        unit = QgsExpression.quotedColumnRef(UNIT_FIELD)
+        split = QgsExpression.quotedColumnRef(SPLIT_FIELD)
         settings.fieldName = (
-            "format_number("
-            + QgsExpression.quotedColumnRef(area_field)
-            + ", 2) || ' m²'"
+            "format_number(CASE WHEN " + unit + " = 'ha' THEN " + area
+            + " / 10000 ELSE " + area + " END, 2)"
+            + " || ' ' || " + unit
+            + " || ' [ID ' || " + split + " || ']'"
         )
         settings.isExpression = True
         settings.placement = _horizontal_placement()
@@ -429,7 +486,179 @@ class PolygonAreaSplitter:
         output.setLabeling(QgsVectorLayerSimpleLabeling(settings))
         output.setLabelsEnabled(True)
 
+    def _highlight_edge(self, source_layer, p1, p2, split_id):
+        """Sammelt alle verwendeten Bezugskanten in einem eigenen Layer."""
+        project = QgsProject.instance()
+        layer_name = self.tr("edge_layer")
+        matches = project.mapLayersByName(layer_name)
+        edge_layer = matches[0] if matches else None
+
+        # Einen bereits vorhandenen Layer unter dem alten Namen weiterverwenden.
+        if edge_layer is None:
+            old_name = "Polygonbezugskante" if self.language == "de" else "Polygon reference edge"
+            old_matches = project.mapLayersByName(old_name)
+            if old_matches and isinstance(old_matches[0], QgsVectorLayer):
+                edge_layer = old_matches[0]
+                edge_layer.setName(layer_name)
+
+        if edge_layer is not None:
+            if (not isinstance(edge_layer, QgsVectorLayer)
+                    or edge_layer.geometryType() != _geom("Line")
+                    or edge_layer.crs() != source_layer.crs()):
+                self._warning(self.tr("edge_layer_incompatible"))
+                return
+            if not _ensure_field(edge_layer, QgsField(SPLIT_FIELD, _qtype_longlong())):
+                self._warning(self.tr("field_failed"))
+                return
+        else:
+            edge_layer = QgsVectorLayer(
+                "LineString?crs={}".format(source_layer.crs().authid()),
+                layer_name, "memory"
+            )
+            edge_layer.dataProvider().addAttributes([
+                QgsField("source_edge", _qtype_string(), len=40),
+                QgsField(SPLIT_FIELD, _qtype_longlong()),
+            ])
+            edge_layer.updateFields()
+            project.addMapLayer(edge_layer)
+
+        # Stil und Beschriftung bei jedem Lauf setzen (auch für vorhandene Layer).
+        edge_layer.renderer().setSymbol(self._edge_symbol())
+        self._set_edge_labels(edge_layer)
+
+        # Bestehende Kanten ausdrücklich erhalten und nur die neue ergänzen.
+        provider = edge_layer.dataProvider()
+        edge_feature = QgsFeature(edge_layer.fields())
+        edge_feature.setGeometry(QgsGeometry.fromPolylineXY([QgsPointXY(p1), QgsPointXY(p2)]))
+        edge_feature.setAttribute("source_edge", "Bezugskante {}".format(edge_layer.featureCount() + 1))
+        edge_feature.setAttribute(SPLIT_FIELD, split_id)
+        success, _ = provider.addFeatures([edge_feature])
+        if not success:
+            self._warning(self.tr("edge_feature_failed"))
+            return
+        edge_layer.updateExtents()
+        edge_layer.triggerRepaint()
+
+    @staticmethod
+    def _edge_symbol():
+        """Cyan, 3 Pixel breite Bezugskante."""
+        symbol = QgsLineSymbol.createSimple({
+            "line_color": "0,127,127,255",
+            "line_width": "3",
+            "line_style": "solid"
+        })
+        symbol.setOutputUnit(_pixel_unit())
+        return symbol
+
+    @staticmethod
+    def _set_edge_labels(edge_layer):
+        """Beschriftet die Bezugskanten entlang der Linie mit der split_id."""
+        settings = QgsPalLayerSettings()
+        settings.fieldName = (
+            "'[ID ' || " + QgsExpression.quotedColumnRef(SPLIT_FIELD) + " || ']'"
+        )
+        settings.isExpression = True
+        settings.placement = _line_placement()
+
+        text_format = QgsTextFormat()
+        text_format.setFont(QFont("Arial", 10))
+        text_format.setSize(10)
+        text_format.setColor(QColor(0, 127, 127))
+
+        buffer = QgsTextBufferSettings()
+        buffer.setEnabled(True)
+        buffer.setSize(1.0)
+        buffer.setColor(QColor(255, 255, 255))
+        text_format.setBuffer(buffer)
+
+        settings.setFormat(text_format)
+        edge_layer.setLabeling(QgsVectorLayerSimpleLabeling(settings))
+        edge_layer.setLabelsEnabled(True)
+
+    def _next_split_id(self):
+        """Nächste freie split_id über Ergebnis- und Bezugskanten-Layer hinweg."""
+        max_id = 0
+        for name in (self.tr("output_layer"), self.tr("edge_layer")):
+            for lyr in QgsProject.instance().mapLayersByName(name):
+                if not isinstance(lyr, QgsVectorLayer):
+                    continue
+                if SPLIT_FIELD not in [f.name() for f in lyr.fields()]:
+                    continue
+                for feat in lyr.getFeatures():
+                    value = feat[SPLIT_FIELD]
+                    if value is not None:
+                        max_id = max(max_id, int(value))
+        return max_id + 1
+
+    @staticmethod
+    def _set_output_symbology(output):
+        """Orange Füllung (#FF8000) mit 50 Prozent Transparenz."""
+        symbol = QgsFillSymbol.createSimple({
+            "color": "255,128,0,128",
+            "outline_color": "255,128,0,255",
+            "outline_width": "0.26",
+            "outline_width_unit": "MM"
+        })
+        output.renderer().setSymbol(symbol)
+
     # -- Ablauf --------------------------------------------------------------
+
+    def _ask_area(self, total_area):
+        """Ein Dialog mit Flächeneingabe und Einheit (m² / ha).
+
+        Liefert (Fläche in m², Einheit) oder None bei Abbruch.
+        """
+        dialog = QDialog(self.iface.mainWindow())
+        dialog.setWindowTitle(self.tr("title"))
+        layout = QVBoxLayout(dialog)
+
+        layout.addWidget(QLabel(self.tr("target_area_label")))
+        spin = QDoubleSpinBox(dialog)
+        spin.setMinimumWidth(180)
+        layout.addWidget(spin)
+
+        radio_m2 = QRadioButton(self.tr("unit_m2"), dialog)
+        radio_ha = QRadioButton(self.tr("unit_ha"), dialog)
+        radio_m2.setChecked(True)
+        layout.addWidget(radio_m2)
+        layout.addWidget(radio_ha)
+
+        ok_flag = _resolve(lambda: QDialogButtonBox.StandardButton.Ok,
+                           lambda: QDialogButtonBox.Ok)
+        cancel_flag = _resolve(lambda: QDialogButtonBox.StandardButton.Cancel,
+                               lambda: QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(ok_flag | cancel_flag, dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        state = {"ha": False}
+
+        def configure(ha):
+            # Aktuellen Wert in m² merken, dann in die neue Einheit umrechnen.
+            value_m2 = spin.value() * (10000.0 if state["ha"] else 1.0)
+            state["ha"] = ha
+            factor = 10000.0 if ha else 1.0
+            min_value = 0.01 / factor
+            max_value = max(min_value, total_area / factor)
+            spin.blockSignals(True)
+            spin.setDecimals(6 if ha else 2)
+            spin.setRange(min_value, max_value)
+            spin.setValue(min(max(value_m2 / factor, min_value), max_value))
+            spin.setSuffix(" ha" if ha else " m²")
+            spin.blockSignals(False)
+
+        configure(False)
+        spin.setValue(total_area)
+        radio_m2.toggled.connect(lambda checked: configure(False) if checked else None)
+        radio_ha.toggled.connect(lambda checked: configure(True) if checked else None)
+
+        accepted = _resolve(lambda: QDialog.DialogCode.Accepted, lambda: QDialog.Accepted)
+        if dialog.exec() != accepted:
+            return None
+        if state["ha"]:
+            return spin.value() * 10000.0, "ha"
+        return spin.value(), "m²"
 
     def run(self):
         layer = self.iface.activeLayer()
@@ -467,14 +696,12 @@ class PolygonAreaSplitter:
             self._warning(self.tr("invalid_geometry"))
             return
 
-        target_area, ok = QInputDialog.getDouble(
-            self.iface.mainWindow(), self.tr("title"), self.tr("target_prompt"),
-            1000.0, 0.01, max(0.01, source_geometry.area()), 2
-        )
-        if not ok:
-            return
-
         total_area = source_geometry.area()
+        result = self._ask_area(total_area)
+        if result is None:
+            return
+        target_area, self._area_unit = result
+
         if target_area >= total_area:
             self._warning(self.tr("target_too_large", total_area))
             return
@@ -631,29 +858,55 @@ class PolygonAreaSplitter:
             self._warning(self.tr("area_mismatch"))
             return
 
-        # Ausgabelayer erstellen
-        output = QgsVectorLayer(
-            "MultiPolygon?crs={}".format(layer.crs().authid()),
-            self.tr("output_layer"), "memory"
-        )
-        provider = output.dataProvider()
-        source_field_names = [field.name() for field in layer.fields()]
+        split_id = self._next_split_id()
+
+        # Vorhandenen Ergebnislayer wiederverwenden oder einmalig anlegen.
+        project = QgsProject.instance()
+        source_field_names = [field.name() for field in layer.fields() if field.name() != SPLIT_FIELD]
         part_field = self._unique_field_name("part_type", source_field_names)
         area_field = self._unique_field_name(
             "area_m2", source_field_names + [part_field]
         )
+        matching_layers = project.mapLayersByName(self.tr("output_layer"))
+        output = matching_layers[0] if matching_layers else None
 
-        provider.addAttributes(list(layer.fields()))
-        provider.addAttributes([
-            QgsField(part_field, _qtype_string(), len=30),
-            QgsField(area_field, _qtype_double(), len=20, prec=2),
-        ])
-        output.updateFields()
+        if output is not None:
+            output_field_names = [field.name() for field in output.fields()]
+            if (not isinstance(output, QgsVectorLayer)
+                    or output.geometryType() != _geom("Polygon")
+                    or output.crs() != layer.crs()
+                    or not all(name in output_field_names for name in source_field_names)
+                    or part_field not in output_field_names
+                    or area_field not in output_field_names):
+                self._warning(self.tr("output_incompatible"))
+                return
+            if not _ensure_field(output, QgsField(SPLIT_FIELD, _qtype_longlong())):
+                self._warning(self.tr("field_failed"))
+                return
+            if not _ensure_field(output, QgsField(UNIT_FIELD, _qtype_string(), len=10)):
+                self._warning(self.tr("field_failed"))
+                return
+        else:
+            output = QgsVectorLayer(
+                "MultiPolygon?crs={}".format(layer.crs().authid()),
+                self.tr("output_layer"), "memory"
+            )
+            provider = output.dataProvider()
+            provider.addAttributes([f for f in layer.fields() if f.name() != SPLIT_FIELD])
+            provider.addAttributes([
+                QgsField(part_field, _qtype_string(), len=30),
+                QgsField(area_field, _qtype_double(), len=20, prec=2),
+                QgsField(SPLIT_FIELD, _qtype_longlong()),
+                QgsField(UNIT_FIELD, _qtype_string(), len=10),
+            ])
+            output.updateFields()
 
         results = [
             (best_target, self.tr("target_label"), target_area_result),
             (best_remainder, self.tr("remainder_label"), remainder_area),
         ]
+        output_field_names = [field.name() for field in output.fields()]
+        source_attributes = dict(zip([f.name() for f in layer.fields()], source_feature.attributes()))
         features = []
         for geometry, label, area in results:
             feature = QgsFeature(output.fields())
@@ -661,17 +914,34 @@ class PolygonAreaSplitter:
             if not result_geometry.isMultipart():
                 result_geometry.convertToMultiType()
             feature.setGeometry(result_geometry)
-            feature.setAttributes(list(source_feature.attributes()) + [label, area])
+            attributes = []
+            for name in output_field_names:
+                if name == part_field:
+                    attributes.append(label)
+                elif name == area_field:
+                    attributes.append(area)
+                elif name == SPLIT_FIELD:
+                    attributes.append(split_id)
+                elif name == UNIT_FIELD:
+                    attributes.append(self._area_unit)
+                else:
+                    attributes.append(source_attributes.get(name))
+            feature.setAttributes(attributes)
             features.append(feature)
 
-        success, _ = provider.addFeatures(features)
+        success, _ = output.dataProvider().addFeatures(features)
         if not success:
             self._warning(self.tr("feature_failed"))
             return
 
         output.updateExtents()
         self._set_labels(output, area_field)
-        QgsProject.instance().addMapLayer(output)
+        self._set_output_symbology(output)
+        if not matching_layers:
+            project.addMapLayer(output)
+
+        # Die zuletzt verwendete Ursprungskante in einem eigenen Layer hervorheben.
+        self._highlight_edge(layer, p1, p2, split_id)
         output.triggerRepaint()
 
         QMessageBox.information(
@@ -680,6 +950,7 @@ class PolygonAreaSplitter:
             + self.tr("target_result", target_area_result) + "\n"
             + self.tr("requested_result", target_area) + "\n"
             + self.tr("deviation_result", abs(target_area_result - target_area)) + "\n"
-            + self.tr("remainder_result", remainder_area) + "\n\n"
+            + self.tr("remainder_result", remainder_area) + "\n"
+            + self.tr("split_result", split_id) + "\n\n"
             + self.tr("area_note")
         )
