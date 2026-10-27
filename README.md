@@ -28,6 +28,22 @@ Plugin by Mike Elstermann (#geoObserver) with AI-Support.
 ## AI assistance / warranty
 This file contains code generated with assistance from an AI. No warranty is provided. Human review and modification performed by Mike Elstermann (#geoObserver).
 
+**Simple Workflow:**
 
+1. Activate the feature layer containing the polygons, e.g. the parcels or arable land
+2. Select exactly one polygon in this feature layer
+3. Enter the desired target size
+4. Click on the edge from which the new area is to be split
+5. Use the result in the new temporary polygon layer that has been created
 
 ![PolygonAreaSplitter_Animation_1](./PolygonAreaSplitter_Animation_1.gif)
+
+
+
+**News for v0.6 ... v0.8:**
+
+* 0.6 - Collecting the split polygons
+* 0.7 - Collecting the reference edges, assigning symbols to division polygons, pre-assigning original area values, selecting m² or ha, assigning IDs, adding IDs to the labels
+* 0.8 - Area can also be entered as a percentage; In addition to the target variable “area,” two new target variables: “number of identical subareas” and “distance”
+
+![PolygonAreaSplitter_Animation_v08](./PolygonArea_Splitter_Animation_v08.gif)

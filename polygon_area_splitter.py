@@ -47,10 +47,12 @@ from qgis.PyQt.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QGroupBox,
     QInputDialog,
     QLabel,
     QMessageBox,
     QRadioButton,
+    QSpinBox,
     QToolBar,
     QVBoxLayout,
 )
@@ -58,6 +60,7 @@ from qgis.PyQt.QtWidgets import (
 
 SPLIT_FIELD = "split_id"
 UNIT_FIELD = "area_unit"
+PCT_FIELD = "area_pct"
 
 TEXTS = {
     "title": {"de": "Polygon nach Fläche teilen", "en": "Divide a Polygon by Area"},
@@ -91,8 +94,25 @@ TEXTS = {
     "target_prompt": {"de": "Gewünschte Teilfläche in {}:",
                       "en": "Target area in {}:"},
     "target_area_label": {"de": "Gewünschte Teilfläche:", "en": "Target area:"},
+    "section_area": {"de": "Zielgröße: Fläche", "en": "Target: area"},
+    "section_count": {"de": "Zielgröße: Anzahl gleicher Teilflächen",
+                      "en": "Target: number of equal parts"},
+    "count_label": {"de": "Anzahl Teilflächen (2–20):", "en": "Number of parts (2–20):"},
+    "section_distance": {"de": "Zielgröße: Abstand", "en": "Target: spacing"},
+    "distance_label": {"de": "Abstand der Teilungen:", "en": "Spacing of divisions:"},
+    "division_count_label": {"de": "Anzahl Teilungen (1–20):", "en": "Number of divisions (1–20):"},
+    "distance_too_large": {
+        "de": "Der Abstand ist größer als die Ausdehnung des Polygons senkrecht zur gewählten Kante. Es kann keine Teilung realisiert werden.\n\nBitte einen kleineren Abstand wählen oder eine andere Kante anklicken.",
+        "en": "The spacing is larger than the extent of the polygon perpendicular to the selected edge. No division can be made.\n\nPlease choose a smaller spacing or click another edge."
+    },
+    "distance_shortfall": {
+        "de": "Von {} Teilungen im Abstand von {:g} m konnten wegen der Größe des Polygons nur {} Teilungen realisiert werden. Ändern Sie ggf. die Einstellungen.",
+        "en": "Of {} divisions at a spacing of {:g} m, only {} divisions could be made because of the size of the polygon. Please adjust the settings if necessary."
+    },
+    "distance_result": {"de": "{} Teilungen im Abstand von {:g} m", "en": "{} divisions at a spacing of {:g} m"},
     "unit_m2": {"de": "Quadratmeter (m²)", "en": "Square metres (m²)"},
     "unit_ha": {"de": "Hektar (ha)", "en": "Hectares (ha)"},
+    "unit_pct": {"de": "Prozent der Gesamtfläche (%)", "en": "Percent of total area (%)"},
     "split_result": {"de": "Split-ID: {}", "en": "Split ID: {}"},
     "field_failed": {"de": "Das Feld split_id konnte im vorhandenen Layer nicht angelegt werden.",
                      "en": "The field split_id could not be added to the existing layer."},
@@ -153,7 +173,7 @@ TEXTS = {
     "requested_result": {"de": "Gewünscht: {:.2f} m²", "en": "Requested area: {:.2f} m²"},
     "deviation_result": {"de": "Abweichung: {:.2f} m²", "en": "Deviation: {:.2f} m²"},
     "remainder_result": {"de": "Restfläche: {:.2f} m²", "en": "Remainder: {:.2f} m²"},
-    "toolbar": {"de": "geoObserver-Werkzeuge", "en": "geoObserver Tools"},
+    "toolbar": {"de": "geoObserverTools", "en": "geoObserverTools"},
 }
 
 
@@ -300,6 +320,8 @@ class PolygonAreaSplitter:
         self.map_tool = None
         self.previous_map_tool = None
         self._area_unit = "m²"
+        self._split_count = None
+        self._split_distance = None
         self.language = self._get_language()
 
     @staticmethod
@@ -425,6 +447,19 @@ class PolygonAreaSplitter:
         ]
         return QgsGeometry.fromPolygonXY([points + [points[0]]])
 
+    @staticmethod
+    def _polygons_only(geometry):
+        """Nur die Polygonanteile einer Geometrie als (Multi)Polygon zurückgeben."""
+        if geometry.isEmpty() or geometry.type() == _geom("Polygon"):
+            return geometry
+        polygons = [
+            part for part in geometry.asGeometryCollection()
+            if part.type() == _geom("Polygon") and not part.isEmpty() and part.area() > 0
+        ]
+        if not polygons:
+            return QgsGeometry()
+        return QgsGeometry.unaryUnion(polygons)
+
     def _split_at_offset(self, geometry, origin, tx, ty, nx, ny,
                          u_min, u_max, v_min, v_max, offset):
         margin = max(abs(u_max - u_min), abs(v_max - v_min), 1.0) * 3.0
@@ -439,6 +474,9 @@ class PolygonAreaSplitter:
         remainder = geometry.difference(target)
         if remainder is None or remainder.isNull():
             return None, None
+        # GEOS kann Linien- oder Punktfragmente liefern (GeometryCollection).
+        target = self._polygons_only(target)
+        remainder = self._polygons_only(remainder)
         return target, remainder
 
     @staticmethod
@@ -466,7 +504,8 @@ class PolygonAreaSplitter:
             "format_number(CASE WHEN " + unit + " = 'ha' THEN " + area
             + " / 10000 ELSE " + area + " END, 2)"
             + " || ' ' || " + unit
-            + " || ' [ID ' || " + split + " || ']'"
+            + " || '\\n' || '[' || format_number(" + QgsExpression.quotedColumnRef(PCT_FIELD)
+            + ", 2) || ' %, ID ' || " + split + " || ']'"
         )
         settings.isExpression = True
         settings.placement = _horizontal_placement()
@@ -543,7 +582,7 @@ class PolygonAreaSplitter:
     def _edge_symbol():
         """Cyan, 3 Pixel breite Bezugskante."""
         symbol = QgsLineSymbol.createSimple({
-            "line_color": "0,127,127,255",
+            "line_color": "0,128,128,255",
             "line_width": "3",
             "line_style": "solid"
         })
@@ -563,7 +602,7 @@ class PolygonAreaSplitter:
         text_format = QgsTextFormat()
         text_format.setFont(QFont("Arial", 10))
         text_format.setSize(10)
-        text_format.setColor(QColor(0, 127, 127))
+        text_format.setColor(QColor(0, 128, 128))
 
         buffer = QgsTextBufferSettings()
         buffer.setEnabled(True)
@@ -603,25 +642,59 @@ class PolygonAreaSplitter:
 
     # -- Ablauf --------------------------------------------------------------
 
-    def _ask_area(self, total_area):
-        """Ein Dialog mit Flächeneingabe und Einheit (m² / ha).
+    def _ask_split_target(self, total_area):
+        """Dialog mit zwei Zielgrößen-Abschnitten:
+        1. Fläche (m², ha oder %), 2. Anzahl gleicher Teilflächen.
 
-        Liefert (Fläche in m², Einheit) oder None bei Abbruch.
+        Liefert {"mode": "area", "target": m², "unit": Label},
+        {"mode": "count", "parts": n} oder None bei Abbruch.
         """
         dialog = QDialog(self.iface.mainWindow())
         dialog.setWindowTitle(self.tr("title"))
         layout = QVBoxLayout(dialog)
 
-        layout.addWidget(QLabel(self.tr("target_area_label")))
-        spin = QDoubleSpinBox(dialog)
+        sec_area = QGroupBox(self.tr("section_area"), dialog)
+        sec_area.setCheckable(True)
+        area_layout = QVBoxLayout(sec_area)
+        area_layout.addWidget(QLabel(self.tr("target_area_label")))
+        spin = QDoubleSpinBox(sec_area)
         spin.setMinimumWidth(180)
-        layout.addWidget(spin)
-
-        radio_m2 = QRadioButton(self.tr("unit_m2"), dialog)
-        radio_ha = QRadioButton(self.tr("unit_ha"), dialog)
+        area_layout.addWidget(spin)
+        radio_m2 = QRadioButton(self.tr("unit_m2"), sec_area)
+        radio_ha = QRadioButton(self.tr("unit_ha"), sec_area)
+        radio_pct = QRadioButton(self.tr("unit_pct"), sec_area)
         radio_m2.setChecked(True)
-        layout.addWidget(radio_m2)
-        layout.addWidget(radio_ha)
+        area_layout.addWidget(radio_m2)
+        area_layout.addWidget(radio_ha)
+        area_layout.addWidget(radio_pct)
+        layout.addWidget(sec_area)
+
+        sec_count = QGroupBox(self.tr("section_count"), dialog)
+        sec_count.setCheckable(True)
+        count_layout = QVBoxLayout(sec_count)
+        count_layout.addWidget(QLabel(self.tr("count_label")))
+        count_spin = QSpinBox(sec_count)
+        count_spin.setRange(2, 20)
+        count_spin.setValue(2)
+        count_layout.addWidget(count_spin)
+        layout.addWidget(sec_count)
+
+        sec_dist = QGroupBox(self.tr("section_distance"), dialog)
+        sec_dist.setCheckable(True)
+        dist_layout = QVBoxLayout(sec_dist)
+        dist_layout.addWidget(QLabel(self.tr("distance_label")))
+        dist_spin = QDoubleSpinBox(sec_dist)
+        dist_spin.setRange(0.01, 10000000.0)
+        dist_spin.setDecimals(2)
+        dist_spin.setValue(50.0)
+        dist_spin.setSuffix(" m")
+        dist_layout.addWidget(dist_spin)
+        dist_layout.addWidget(QLabel(self.tr("division_count_label")))
+        div_spin = QSpinBox(sec_dist)
+        div_spin.setRange(1, 20)
+        div_spin.setValue(3)
+        dist_layout.addWidget(div_spin)
+        layout.addWidget(sec_dist)
 
         ok_flag = _resolve(lambda: QDialogButtonBox.StandardButton.Ok,
                            lambda: QDialogButtonBox.Ok)
@@ -632,33 +705,71 @@ class PolygonAreaSplitter:
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
 
-        state = {"ha": False}
+        factors = {"m2": 1.0, "ha": 10000.0}
+        state = {"mode": "m2"}
 
-        def configure(ha):
+        def to_m2(value, mode):
+            if mode == "pct":
+                return value * total_area / 100.0
+            return value * factors[mode]
+
+        def from_m2(value_m2, mode):
+            if mode == "pct":
+                return value_m2 * 100.0 / total_area
+            return value_m2 / factors[mode]
+
+        def configure(new_mode):
             # Aktuellen Wert in m² merken, dann in die neue Einheit umrechnen.
-            value_m2 = spin.value() * (10000.0 if state["ha"] else 1.0)
-            state["ha"] = ha
-            factor = 10000.0 if ha else 1.0
-            min_value = 0.01 / factor
-            max_value = max(min_value, total_area / factor)
+            value_m2 = to_m2(spin.value(), state["mode"])
+            state["mode"] = new_mode
+            if new_mode == "pct":
+                min_value, max_value, decimals, suffix = 0.01, 99.99, 2, " %"
+            else:
+                factor = factors[new_mode]
+                min_value = 0.01 / factor
+                max_value = max(min_value, total_area / factor)
+                decimals = 6 if new_mode == "ha" else 2
+                suffix = " ha" if new_mode == "ha" else " m²"
             spin.blockSignals(True)
-            spin.setDecimals(6 if ha else 2)
+            spin.setDecimals(decimals)
             spin.setRange(min_value, max_value)
-            spin.setValue(min(max(value_m2 / factor, min_value), max_value))
-            spin.setSuffix(" ha" if ha else " m²")
+            spin.setValue(min(max(from_m2(value_m2, new_mode), min_value), max_value))
+            spin.setSuffix(suffix)
             spin.blockSignals(False)
 
-        configure(False)
+        configure("m2")
         spin.setValue(total_area)
-        radio_m2.toggled.connect(lambda checked: configure(False) if checked else None)
-        radio_ha.toggled.connect(lambda checked: configure(True) if checked else None)
+        for key, radio in (("m2", radio_m2), ("ha", radio_ha), ("pct", radio_pct)):
+            radio.toggled.connect(lambda checked, k=key: configure(k) if checked else None)
+
+        # Die drei Abschnitte sind gegenseitig ausschließend.
+        sections = {"area": sec_area, "count": sec_count, "distance": sec_dist}
+        sec_area.setChecked(True)
+        sec_count.setChecked(False)
+        sec_dist.setChecked(False)
+        busy = {"value": False}
+
+        def pick(section):
+            if busy["value"]:
+                return
+            busy["value"] = True
+            for key, box in sections.items():
+                box.setChecked(key == section)
+            busy["value"] = False
+
+        for key, box in sections.items():
+            box.toggled.connect(lambda checked, k=key: pick(k if checked else "area"))
 
         accepted = _resolve(lambda: QDialog.DialogCode.Accepted, lambda: QDialog.Accepted)
         if dialog.exec() != accepted:
             return None
-        if state["ha"]:
-            return spin.value() * 10000.0, "ha"
-        return spin.value(), "m²"
+        if sec_dist.isChecked():
+            return {"mode": "distance", "distance": dist_spin.value(), "count": div_spin.value()}
+        if sec_count.isChecked():
+            return {"mode": "count", "parts": count_spin.value()}
+        mode = state["mode"]
+        unit_label = "ha" if mode == "ha" else "m²"
+        return {"mode": "area", "target": to_m2(spin.value(), mode), "unit": unit_label}
 
     def run(self):
         layer = self.iface.activeLayer()
@@ -697,10 +808,23 @@ class PolygonAreaSplitter:
             return
 
         total_area = source_geometry.area()
-        result = self._ask_area(total_area)
-        if result is None:
+        choice = self._ask_split_target(total_area)
+        if choice is None:
             return
-        target_area, self._area_unit = result
+        if choice["mode"] == "count":
+            self._split_count = choice["parts"]
+            self._split_distance = None
+            target_area = total_area / choice["parts"]
+            self._area_unit = "m²"
+        elif choice["mode"] == "distance":
+            self._split_count = None
+            self._split_distance = (choice["distance"], choice["count"])
+            target_area = 0.0  # wird im Abstandsmodus nicht verwendet
+            self._area_unit = "m²"
+        else:
+            self._split_count = None
+            self._split_distance = None
+            target_area, self._area_unit = choice["target"], choice["unit"]
 
         if target_area >= total_area:
             self._warning(self.tr("target_too_large", total_area))
@@ -794,67 +918,106 @@ class PolygonAreaSplitter:
         # die gesamte Fläche umfasst.
         low = v_min - 0.5 * margin
         high = v_max + 0.5 * margin
-
-        low_target, _ = self._split_at_offset(
-            source_geometry, origin, tx, ty, nx, ny,
-            u_min, u_max, v_min, v_max, low)
-        high_target, _ = self._split_at_offset(
-            source_geometry, origin, tx, ty, nx, ny,
-            u_min, u_max, v_min, v_max, high)
-
-        if low_target is None or high_target is None:
-            self._warning(self.tr("calculation_failed"))
-            return
-
-        min_area = low_target.area()
-        max_area = high_target.area()
-        if target_area < min_area - 0.0001 or target_area > max_area + 0.0001:
-            self._warning(self.tr("cannot_bracket"))
-            return
-
-        # Binäre Suche nach dem Schnittversatz mit der gewünschten Fläche.
-        best_target = None
-        best_remainder = None
-        best_error = float("inf")
-        lo, hi = low, high
         min_step = max(1e-9, scale * 1e-12)
 
-        for _ in range(200):
-            mid = (lo + hi) / 2.0
-            target, remainder = self._split_at_offset(
-                source_geometry, origin, tx, ty, nx, ny,
-                u_min, u_max, v_min, v_max, mid)
-            if target is None or remainder is None:
-                self._warning(self.tr("calculation_failed"))
+        def cut(geometry, wanted):
+            """Schneidet eine Teilfläche mit der gewünschten Fläche ab.
+
+            Liefert (Teilfläche, Rest, None) oder (None, None, Fehlerschlüssel).
+            """
+            t_low, _ = self._split_at_offset(geometry, origin, tx, ty, nx, ny,
+                                             u_min, u_max, v_min, v_max, low)
+            t_high, _ = self._split_at_offset(geometry, origin, tx, ty, nx, ny,
+                                              u_min, u_max, v_min, v_max, high)
+            if t_low is None or t_high is None:
+                return None, None, "calculation_failed"
+            if wanted < t_low.area() - 0.0001 or wanted > t_high.area() + 0.0001:
+                return None, None, "cannot_bracket"
+
+            # Binäre Suche nach dem Schnittversatz mit der gewünschten Fläche.
+            best = None
+            lo, hi = low, high
+            for _ in range(200):
+                mid = (lo + hi) / 2.0
+                target, remainder = self._split_at_offset(
+                    geometry, origin, tx, ty, nx, ny,
+                    u_min, u_max, v_min, v_max, mid)
+                if target is None or remainder is None:
+                    return None, None, "calculation_failed"
+                area = target.area()
+                error = abs(area - wanted)
+                if best is None or error < best[2]:
+                    best = (target, remainder, error)
+                if error <= 0.0001 or (hi - lo) < min_step:
+                    break
+                if area < wanted:
+                    lo = mid
+                else:
+                    hi = mid
+            return best[0], best[1], None
+
+        # Teilflächen: entweder eine Zielfläche oder n gleich große Teile.
+        pieces, labels = [], []
+        shortfall = None
+        distance_note = None
+        if self._split_distance:
+            distance, requested = self._split_distance
+            # Schnittlinien im Abstand k * d von der Bezugskante (Lage v = 0).
+            cuts = []
+            for k in range(1, requested + 1):
+                offset = k * distance
+                if offset >= v_max - scale * 1e-9:
+                    break
+                cut_target, _ = self._split_at_offset(
+                    source_geometry, origin, tx, ty, nx, ny,
+                    u_min, u_max, v_min, v_max, offset)
+                if cut_target is None:
+                    self._warning(self.tr("calculation_failed"))
+                    return
+                cuts.append(cut_target)
+            realized = len(cuts)
+            if realized == 0:
+                self._warning(self.tr("distance_too_large"))
+                return
+            pieces = [cuts[0]]
+            for k in range(1, realized):
+                pieces.append(cuts[k].difference(cuts[k - 1]))
+            pieces.append(source_geometry.difference(cuts[-1]))
+            pieces = [self._polygons_only(piece) for piece in pieces]
+            labels = ["{} {}".format(self.tr("target_label"), i + 1)
+                      for i in range(len(pieces))]
+            distance_note = self.tr("distance_result", realized, distance)
+            if realized < requested:
+                shortfall = self.tr("distance_shortfall", requested, distance, realized)
+        elif self._split_count:
+            parts = self._split_count
+            remainder = source_geometry
+            for i in range(parts - 1):
+                wanted = remainder.area() / (parts - i)
+                target, remainder, error = cut(remainder, wanted)
+                if error:
+                    self._warning(self.tr(error))
+                    return
+                pieces.append(target)
+                labels.append("{} {}".format(self.tr("target_label"), i + 1))
+            pieces.append(remainder)
+            labels.append("{} {}".format(self.tr("target_label"), parts))
+        else:
+            target, remainder, error = cut(source_geometry, target_area)
+            if error:
+                self._warning(self.tr(error))
+                return
+            pieces = [target, remainder]
+            labels = [self.tr("target_label"), self.tr("remainder_label")]
+
+        for piece in pieces:
+            if not piece.isGeosValid():
+                self._warning(self.tr("invalid_target"))
                 return
 
-            area = target.area()
-            error = abs(area - target_area)
-            if error < best_error:
-                best_error = error
-                best_target, best_remainder = target, remainder
-
-            if error <= 0.0001 or (hi - lo) < min_step:
-                break
-            if area < target_area:
-                lo = mid
-            else:
-                hi = mid
-
-        if best_target is None or best_remainder is None:
-            self._warning(self.tr("calculation_failed"))
-            return
-        if not best_target.isGeosValid():
-            self._warning(self.tr("invalid_target"))
-            return
-        if not best_remainder.isGeosValid():
-            self._warning(self.tr("invalid_remainder"))
-            return
-
-        target_area_result = best_target.area()
-        remainder_area = best_remainder.area()
+        area_sum = sum(piece.area() for piece in pieces)
         area_tolerance = max(0.001, total_area * 1e-7)
-        if abs(target_area_result + remainder_area - total_area) > area_tolerance:
+        if abs(area_sum - total_area) > area_tolerance:
             self._warning(self.tr("area_mismatch"))
             return
 
@@ -886,6 +1049,9 @@ class PolygonAreaSplitter:
             if not _ensure_field(output, QgsField(UNIT_FIELD, _qtype_string(), len=10)):
                 self._warning(self.tr("field_failed"))
                 return
+            if not _ensure_field(output, QgsField(PCT_FIELD, _qtype_double(), len=20, prec=2)):
+                self._warning(self.tr("field_failed"))
+                return
         else:
             output = QgsVectorLayer(
                 "MultiPolygon?crs={}".format(layer.crs().authid()),
@@ -898,13 +1064,11 @@ class PolygonAreaSplitter:
                 QgsField(area_field, _qtype_double(), len=20, prec=2),
                 QgsField(SPLIT_FIELD, _qtype_longlong()),
                 QgsField(UNIT_FIELD, _qtype_string(), len=10),
+                QgsField(PCT_FIELD, _qtype_double(), len=20, prec=2),
             ])
             output.updateFields()
 
-        results = [
-            (best_target, self.tr("target_label"), target_area_result),
-            (best_remainder, self.tr("remainder_label"), remainder_area),
-        ]
+        results = [(geometry, label, geometry.area()) for geometry, label in zip(pieces, labels)]
         output_field_names = [field.name() for field in output.fields()]
         source_attributes = dict(zip([f.name() for f in layer.fields()], source_feature.attributes()))
         features = []
@@ -924,6 +1088,8 @@ class PolygonAreaSplitter:
                     attributes.append(split_id)
                 elif name == UNIT_FIELD:
                     attributes.append(self._area_unit)
+                elif name == PCT_FIELD:
+                    attributes.append(area / source_geometry.area() * 100.0)
                 else:
                     attributes.append(source_attributes.get(name))
             feature.setAttributes(attributes)
@@ -940,17 +1106,22 @@ class PolygonAreaSplitter:
         if not matching_layers:
             project.addMapLayer(output)
 
-        # Die zuletzt verwendete Ursprungskante in einem eigenen Layer hervorheben.
+        # Die verwendete Bezugskante in einem eigenen Layer hervorheben.
         self._highlight_edge(layer, p1, p2, split_id)
         output.triggerRepaint()
 
+        lines = []
+        if shortfall:
+            lines += [shortfall, ""]
+        lines += [self.tr("results_added"), ""]
+        for _, label, area in results:
+            lines.append("{}: {:.2f} m²".format(label, area))
+        if distance_note:
+            lines.append(distance_note)
+        elif not self._split_count:
+            lines.append(self.tr("requested_result", target_area))
+            lines.append(self.tr("deviation_result", abs(results[0][2] - target_area)))
+        lines += ["", self.tr("split_result", split_id), "", self.tr("area_note")]
         QMessageBox.information(
-            self.iface.mainWindow(), self.tr("complete"),
-            self.tr("results_added") + "\n\n"
-            + self.tr("target_result", target_area_result) + "\n"
-            + self.tr("requested_result", target_area) + "\n"
-            + self.tr("deviation_result", abs(target_area_result - target_area)) + "\n"
-            + self.tr("remainder_result", remainder_area) + "\n"
-            + self.tr("split_result", split_id) + "\n\n"
-            + self.tr("area_note")
+            self.iface.mainWindow(), self.tr("complete"), "\n".join(lines)
         )
