@@ -36,7 +36,7 @@ This file contains code generated with assistance from an AI. No warranty is pro
 4. Click on the edge from which the new area is to be split
 5. Use the result in the new temporary polygon layer that has been created
 
-![PolygonAreaSplitter_Animation_1](./PolygonAreaSplitter_Animation_1.gif)
+![PolygonAreaSplitter_Animation_1](./PolygonArea_Splitter_Animation_v08_a.gif)
 
 
 
@@ -46,4 +46,4 @@ This file contains code generated with assistance from an AI. No warranty is pro
 * 0.7 - Collecting the reference edges, assigning symbols to division polygons, pre-assigning original area values, selecting m² or ha, assigning IDs, adding IDs to the labels
 * 0.8 - Area can also be entered as a percentage; In addition to the target variable “area,” two new target variables: “number of identical subareas” and “distance”
 
-![PolygonAreaSplitter_Animation_v08](./PolygonArea_Splitter_Animation_v08.gif)
+![PolygonAreaSplitter_Animation_v08](./PolygonArea_Splitter_Animation_v08_b.gif)
