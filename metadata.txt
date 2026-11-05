@@ -3,7 +3,7 @@ name=Polygon Area Splitter
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=Split one selected polygon into a target area and a remainder using a clicked boundary edge to define the cut direction / Teilen Sie ein ausgewähltes Polygon mithilfe einer angeklickten Begrenzungskante, um die Trennrichtung festzulegen, in einen Zielbereich und einen Restbereich auf.. German/English interface.
-version=0.8.0
+version=0.9.0
 author=Mike Elstermann (#geoObserver) and AI
 email=news@geoobserver.de
 about=Interactive polygon splitting by target area. The source feature is not modified. Includes area labels and German/English messages./Interaktive Polygonaufteilung nach Zielfläche. Das Quellobjekt wird dabei nicht verändert. Enthält Flächenbeschriftungen sowie Meldungen auf Deutsch und Englisch.
@@ -18,3 +18,4 @@ changelog=0.5 - Initial Upload
 	0.6 - Collecting the split polygons
 	0.7 - Collecting the reference edges, assigning symbols to division polygons, pre-assigning original area values, selecting m² or ha, assigning IDs, adding IDs to the labels
 	0.8 - Area can also be entered as a percentage; In addition to the target variable “area,” two new target variables: “number of identical subareas” and “distance”
+	0.9 - Cosmetics: Labeling, Symbolisation, new Layer "Klickpunkt Polygonbezugskanten", Table output, decimal places, raise awareness regarding attributes that are copied 1:1 without being split, Remove “unnecessary” vertices in the result polygon

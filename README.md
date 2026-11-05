@@ -40,10 +40,19 @@ This file contains code generated with assistance from an AI. No warranty is pro
 
 
 
-**News for v0.6 ... v0.8:**
+#### Changelog
+
+**v0.6 ... v0.8:**
 
 * 0.6 - Collecting the split polygons
 * 0.7 - Collecting the reference edges, assigning symbols to division polygons, pre-assigning original area values, selecting m² or ha, assigning IDs, adding IDs to the labels
 * 0.8 - Area can also be entered as a percentage; In addition to the target variable “area,” two new target variables: “number of identical subareas” and “distance”
 
 ![PolygonAreaSplitter_Animation_v08](./PolygonArea_Splitter_Animation_v08_b.gif)
+
+**v0.9**
+
+* Cosmetics: Labeling, Symbolisation, new Layer "Klickpunkt Polygonbezugskanten", Table output, decimal places
+* raise awareness regarding attributes that are copied 1:1 without being split
+* Remove “unnecessary” vertices in the result polygon (yellow arrows):
+![PolygonArea_Splitter_Animation_v09_a](./PolygonArea_Splitter_Animation_v09_a.png)
